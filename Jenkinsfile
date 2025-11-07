@@ -2,31 +2,28 @@ pipeline {
   agent any
   options { timestamps() }
 
-  parameters {
-    string(name: 'PROJECT_ID',   defaultValue: 'codeqa-ahana',   description: 'GCP Project')
-    string(name: 'REGION',       defaultValue: 'us-central1',    description: 'GCP Region for Dataproc')
-    string(name: 'CLUSTER_NAME', defaultValue: 'ahana-dp',       description: 'Dataproc cluster name (existing)')
-    string(name: 'BUCKET_NAME',  defaultValue: 'ahana-dataproc-demo-bucket', description: 'GCS bucket for job I/O')
-
-    choice(name: 'SA_CRED_KIND', choices: ['file','text'], description: 'How the SA key is stored in Jenkins')
-    string(name: 'DATAPROC_SA_FILE_CRED_ID', defaultValue: 'dataproc-sa-key',     description: 'ID of Secret file cred (JSON key)')
-    string(name: 'DATAPROC_SA_B64_CRED_ID',  defaultValue: 'dataproc-sa-key-b64', description: 'ID of Secret text cred (base64 of JSON key)')
-  }
-
   environment {
-    // Sonar (tool must exist in Manage Jenkins → Global Tool Configuration)
-    SCANNER_HOME   = tool name: 'sonar-scanner', type: 'hudson.plugins.sonar.SonarRunnerInstallation'
-    SONAR_HOST_URL = 'http://136.114.144.55:9000'
+    // --- Sonar ---
+    SCANNER_HOME = tool name: 'sonar-scanner', type: 'hudson.plugins.sonar.SonarRunnerInstallation'
+    SONAR_HOST_URL = 'http://136.114.144.55:9000'    // your Sonar host
+
+    // --- GCP / Dataproc job params (edit if you change something later) ---
+    PROJECT_ID    = 'codeqa-ahana'
+    REGION        = 'us-central1'
+    CLUSTER_NAME  = 'ahana-dp'
+    BUCKET        = 'ahana-dp-bkt-1762552295'        // your bucket from previous run
+    HADOOP_VER    = '3.3.6'                          // jar we uploaded to GCS
   }
 
   stages {
     stage('Checkout') {
-      steps { checkout scm }
+      steps {
+        checkout scm
+      }
     }
 
     stage('SonarQube Scan') {
       steps {
-        // Your Sonar token in Jenkins as Secret Text (ID: final)
         withCredentials([string(credentialsId: 'final', variable: 'SONAR_TOKEN')]) {
           withSonarQubeEnv('sonar') {
             sh '''
@@ -48,116 +45,116 @@ pipeline {
       steps {
         timeout(time: 3, unit: 'MINUTES') {
           script {
-            def qg = waitForQualityGate abortPipeline: false, credentialsId: 'final'
+            def qg = waitForQualityGate abortPipeline: true, credentialsId: 'final'
             echo "Quality Gate status: ${qg.status}"
-            if (qg.status == 'OK') {
-              env.QG_OK = 'true'
-            } else {
-              env.QG_OK = 'false'
-              currentBuild.result = 'UNSTABLE'
-              echo "Skipping Dataproc job because quality gate is ${qg.status}"
-            }
           }
         }
       }
     }
 
-    // Install Google Cloud SDK locally in the workspace if it's not present
-    stage('Ensure gcloud') {
-      when { environment name: 'QG_OK', value: 'true' }
+    stage('Install gcloud (if needed)') {
       steps {
         sh '''
           set -euo pipefail
 
-          if command -v gcloud >/dev/null 2>&1; then
-            echo "gcloud already present:"
-            gcloud version || true
-            exit 0
+          # Install into workspace-local dir so we need no root
+          if [ ! -x ".gcloud/google-cloud-sdk/bin/gcloud" ]; then
+            rm -rf .gcloud && mkdir -p .gcloud
+            curl -sSL https://dl.google.com/dl/cloudsdk/channels/rapid/downloads/google-cloud-cli-472.0.0-linux-x86_64.tar.gz \
+              -o .gcloud.tgz
+            tar -xzf .gcloud.tgz -C .gcloud
+            ./.gcloud/google-cloud-sdk/install.sh --quiet --usage-reporting=false --path-update=false --additional-components
           fi
 
-          GCLOUD_DIR="$WORKSPACE/.gcloud"
-          SDK_DIR="$GCLOUD_DIR/google-cloud-sdk"
-          mkdir -p "$GCLOUD_DIR"
-          cd "$GCLOUD_DIR"
+          # Write a helper PATH file we can source in later stages
+          cat > .gcloud-path.sh <<'EOF'
+          export PATH="$(pwd)/.gcloud/google-cloud-sdk/bin:$PATH"
+          EOF
 
-          TAR="google-cloud-cli-linux-x86_64.tgz"
-          # Pin to a recent stable; update if needed
-          curl -fsSL -o "$TAR" https://dl.google.com/dl/cloudsdk/channels/rapid/downloads/google-cloud-cli-472.0.0-linux-x86_64.tar.gz
-          tar xzf "$TAR"
-          "$SDK_DIR/install.sh" --quiet || true
-
-          # Persist PATH for later stages in this build
-          echo "export PATH=\\"$SDK_DIR/bin:$PATH\\"" > "$WORKSPACE/.gcloud-path.sh"
-          . "$WORKSPACE/.gcloud-path.sh"
-
+          # Prove it's available
+          . ./.gcloud-path.sh
           gcloud version
         '''
       }
     }
 
     stage('GCP Auth (SA)') {
-      when { environment name: 'QG_OK', value: 'true' }
       steps {
-        script {
-          if (params.SA_CRED_KIND == 'file') {
-            withCredentials([file(credentialsId: params.DATAPROC_SA_FILE_CRED_ID, variable: 'GOOGLE_APPLICATION_CREDENTIALS')]) {
-              sh '''
-                set -euo pipefail
-                [ -f "$WORKSPACE/.gcloud-path.sh" ] && . "$WORKSPACE/.gcloud-path.sh" || true
+        withCredentials([file(credentialsId: 'dataproc-sa-key', variable: 'GOOGLE_APPLICATION_CREDENTIALS')]) {
+          sh '''
+            set -euo pipefail
+            [ -f ".gcloud-path.sh" ] && . ./.gcloud-path.sh || true
 
-                gcloud auth activate-service-account --key-file="$GOOGLE_APPLICATION_CREDENTIALS"
-                gcloud config set core/project "${PROJECT_ID}"
-                gcloud config set dataproc/region "${REGION}"
+            # Activate service account
+            gcloud auth activate-service-account --key-file="$GOOGLE_APPLICATION_CREDENTIALS"
 
-                gcloud auth list
-              '''
-            }
-          } else {
-            withCredentials([string(credentialsId: params.DATAPROC_SA_B64_CRED_ID, variable: 'SA_KEY_B64')]) {
-              sh '''
-                set -euo pipefail
-                [ -f "$WORKSPACE/.gcloud-path.sh" ] && . "$WORKSPACE/.gcloud-path.sh" || true
+            # Set project/region (persisted in this workspace)
+            gcloud config set core/project "${PROJECT_ID}"
+            gcloud config set dataproc/region "${REGION}"
 
-                echo "$SA_KEY_B64" | base64 -d > sa.json
-                export GOOGLE_APPLICATION_CREDENTIALS="$PWD/sa.json"
-                gcloud auth activate-service-account --key-file="$GOOGLE_APPLICATION_CREDENTIALS"
-                gcloud config set core/project "${PROJECT_ID}"
-                gcloud config set dataproc/region "${REGION}"
-
-                gcloud auth list
-              '''
-            }
-          }
+            # Show active account for sanity
+            gcloud auth list
+          '''
         }
       }
     }
 
     stage('Run Dataproc Hadoop Job') {
-      when { environment name: 'QG_OK', value: 'true' }
       steps {
         sh '''
           set -euo pipefail
-          [ -f "$WORKSPACE/.gcloud-path.sh" ] && . "$WORKSPACE/.gcloud-path.sh" || true
+          [ -f ".gcloud-path.sh" ] && . ./.gcloud-path.sh || true
 
-          export REGION="${REGION}"
-          export CLUSTER_NAME="${CLUSTER_NAME}"
-          export BUCKET_NAME="${BUCKET_NAME}"
-          export BUILD_ID="${BUILD_ID}"
+          # Verify cluster exists
+          gcloud dataproc clusters describe "${CLUSTER_NAME}" --region="${REGION}" >/dev/null
 
-          # Optional visibility
-          gcloud dataproc clusters list --region="${REGION}" || true
-          gsutil ls || true
+          # Ensure the streaming jar is present in GCS (we uploaded this earlier)
+          gsutil ls "gs://${BUCKET}/jars/hadoop-streaming-${HADOOP_VER}.jar" >/dev/null
 
-          ci/run_hadoop_job.sh
+          # Push (or refresh) the mapper/reducer into GCS jobs/ (idempotent)
+          gsutil cp mapper.py "gs://${BUCKET}/jobs/mapper.py"
+          gsutil cp reducer.py "gs://${BUCKET}/jobs/reducer.py"
+
+          # Submit streaming job
+          OUTDIR="linecounts-$(date +%s)"
+          gcloud dataproc jobs submit hadoop \
+            --project="${PROJECT_ID}" \
+            --region="${REGION}" \
+            --cluster="${CLUSTER_NAME}" \
+            --class=org.apache.hadoop.streaming.HadoopStreaming \
+            --jars="gs://${BUCKET}/jars/hadoop-streaming-${HADOOP_VER}.jar" \
+            -- \
+            -files "gs://${BUCKET}/jobs/mapper.py,gs://${BUCKET}/jobs/reducer.py" \
+            -mapper "python3 mapper.py" \
+            -reducer "python3 reducer.py" \
+            -input "gs://${BUCKET}/repo-input" \
+            -output "gs://${BUCKET}/${OUTDIR}"
+
+          # Collect lightweight artifacts for grading
+          rm -rf artifacts && mkdir -p artifacts
+          echo "gs://${BUCKET}/${OUTDIR}" | tee artifacts/output_prefix.txt
+          gsutil ls "gs://${BUCKET}/${OUTDIR}/part-*" | tee artifacts/output_files.txt
+          gsutil cat "gs://${BUCKET}/${OUTDIR}/part-*" | head -n 50 | tee artifacts/linecounts_head.txt
+
+          # Basic sanity
+          test -s artifacts/linecounts_head.txt
         '''
+      }
+      post {
+        always {
+          archiveArtifacts artifacts: 'artifacts/**', allowEmptyArchive: true
+          echo "Build result: ${currentBuild.currentResult}"
+        }
       }
     }
   }
 
   post {
-    always {
-      archiveArtifacts artifacts: 'dataproc-output.txt', onlyIfSuccessful: false
-      echo "Build result: ${currentBuild.currentResult}"
+    failure {
+      echo 'Pipeline failed. Check the stage logs above (Sonar, Auth, or Dataproc).'
+    }
+    success {
+      echo 'Pipeline finished successfully'
     }
   }
 }

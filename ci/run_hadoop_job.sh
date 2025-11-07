@@ -1,29 +1,35 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REGION="${REGION:?missing}"
-CLUSTER_NAME="${CLUSTER_NAME:?missing}"
-BUCKET_NAME="${BUCKET_NAME:?missing}"
-BUCKET_URI="gs://${BUCKET_NAME}"
+# expects: PROJECT_ID, REGION, CLUSTER_NAME, BUCKET_NAME, BUILD_ID
+: "${PROJECT_ID:?missing} ${REGION:?missing} ${CLUSTER_NAME:?missing} ${BUCKET_NAME:?missing} ${BUILD_ID:?missing}"
 
-# Stage repo content as input
-gsutil ls "${BUCKET_URI}" >/dev/null 2>&1 || gsutil mb -l "${REGION}" "${BUCKET_URI}"
-gsutil -m rsync -r -x '(^|/)\.' . "${BUCKET_URI}/repo-input"
+# stage job assets + input
+gsutil cp mapper.py "gs://${BUCKET_NAME}/jobs/mapper.py"
+gsutil cp reducer.py "gs://${BUCKET_NAME}/jobs/reducer.py"
 
-# Submit Hadoop Streaming job
-OUT_PATH="${BUCKET_URI}/linecounts-${BUILD_ID:-$(date +%s)}"
+# if you have local sample input folder ./repo-input, upload it:
+if [ -d "repo-input" ]; then
+  gsutil -m cp -r repo-input "gs://${BUCKET_NAME}/repo-input"
+fi
+
+OUT="gs://${BUCKET_NAME}/linecounts-${BUILD_ID}"
+
+# run streaming job
 gcloud dataproc jobs submit hadoop \
+  --project="${PROJECT_ID}" \
   --region="${REGION}" \
   --cluster="${CLUSTER_NAME}" \
   --jar=file:/usr/lib/hadoop-mapreduce/hadoop-streaming.jar \
-  --files=mapper.py,reducer.py \
   -- \
-  -D mapreduce.job.name=linecount-per-file \
-  -mapper mapper.py \
-  -reducer reducer.py \
-  -input "${BUCKET_URI}/repo-input" \
-  -output "${OUT_PATH}"
+  -D mapreduce.job.name="linecount-${BUILD_ID}" \
+  -files="gs://${BUCKET_NAME}/jobs/mapper.py,gs://${BUCKET_NAME}/jobs/reducer.py" \
+  -mapper="python3 mapper.py" \
+  -reducer="python3 reducer.py" \
+  -input="gs://${BUCKET_NAME}/repo-input" \
+  -output="${OUT}"
 
-echo "==== OUTPUT (${OUT_PATH}) ====" | tee dataproc-output.txt
-gsutil cat "${OUT_PATH}/part-*" | tee -a dataproc-output.txt
+# show results in logs
+gsutil ls "${OUT}/"
+gsutil cat "${OUT}/part-*" | head -n 50
 

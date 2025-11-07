@@ -99,3 +99,6 @@ docs/_build/
 # PyBuilder
 target/
 
+ci/dataproc-sa-key.json
+repo-input/
+hadoop-streaming-*.jar

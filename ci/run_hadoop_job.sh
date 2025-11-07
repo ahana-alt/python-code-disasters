@@ -1,21 +1,29 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-INPUT_DIR=${INPUT_DIR:-/data/python-code-disasters}
-OUTPUT_DIR=${OUTPUT_DIR:-/tmp/linecounts-$(date +%s)}
-HADOOP_STREAMING_JAR=${HADOOP_STREAMING_JAR:-/usr/lib/hadoop-mapreduce/hadoop-streaming.jar}
+REGION="${REGION:?missing}"
+CLUSTER_NAME="${CLUSTER_NAME:?missing}"
+BUCKET_NAME="${BUCKET_NAME:?missing}"
+BUCKET_URI="gs://${BUCKET_NAME}"
 
-hdfs dfs -mkdir -p "$INPUT_DIR"
-find . -name "*.py" -maxdepth 3 -print0 | xargs -0 -I{} hdfs dfs -put -f "{}" "$INPUT_DIR/"
+# Stage repo content as input
+gsutil ls "${BUCKET_URI}" >/dev/null 2>&1 || gsutil mb -l "${REGION}" "${BUCKET_URI}"
+gsutil -m rsync -r -x '(^|/)\.' . "${BUCKET_URI}/repo-input"
 
-hdfs dfs -rm -r -f "$OUTPUT_DIR" || true
-hadoop jar "$HADOOP_STREAMING_JAR" \
-  -D mapreduce.job.name="linecount-per-file" \
+# Submit Hadoop Streaming job
+OUT_PATH="${BUCKET_URI}/linecounts-${BUILD_ID:-$(date +%s)}"
+gcloud dataproc jobs submit hadoop \
+  --region="${REGION}" \
+  --cluster="${CLUSTER_NAME}" \
+  --jar=file:/usr/lib/hadoop-mapreduce/hadoop-streaming.jar \
+  --files=mapper.py,reducer.py \
+  -- \
+  -D mapreduce.job.name=linecount-per-file \
   -mapper mapper.py \
   -reducer reducer.py \
-  -files mapper.py,reducer.py \
-  -input "$INPUT_DIR" \
-  -output "$OUTPUT_DIR"
+  -input "${BUCKET_URI}/repo-input" \
+  -output "${OUT_PATH}"
 
-echo "==== Line counts (per file) ===="
-hdfs dfs -cat "$OUTPUT_DIR/part-*"
+echo "==== OUTPUT (${OUT_PATH}) ====" | tee dataproc-output.txt
+gsutil cat "${OUT_PATH}/part-*" | tee -a dataproc-output.txt
+

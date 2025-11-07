@@ -17,20 +17,15 @@ sonar.sourceEncoding=UTF-8
     stage('SonarQube Scan') {
       steps {
         script {
-          // Use the SonarScanner tool installed via Manage Jenkins > Tools (name must be exactly 'sonar-scanner')
-          def scannerHome = tool 'sonar-scanner'
-          // 1) get the token explicitly from Jenkins credentials
+          def scannerHome = tool 'sonar-scanner'   // Manage Jenkins → Tools → SonarQube Scanner (name must be exactly this)
           withCredentials([string(credentialsId: 'final', variable: 'SONAR_TOKEN')]) {
-            // 2) get server URL etc from the Sonar server named 'sonar'
-            withSonarQubeEnv('sonar') {
-              sh """
-                set -eu
-                export PATH="${scannerHome}/bin:\$PATH"
-                sonar-scanner \\
-                  -Dsonar.host.url="\$SONAR_HOST_URL" \\
-                  -Dsonar.login="\$SONAR_TOKEN"
-              """
-            }
+            sh """
+              set -eu
+              export PATH="${scannerHome}/bin:\$PATH"
+              sonar-scanner \\
+                -Dsonar.host.url=http://136.114.144.55:9000 \\
+                -Dsonar.login=\$SONAR_TOKEN
+            """
           }
         }
       }

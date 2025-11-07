@@ -17,7 +17,7 @@ pipeline {
 
     stage('SonarQube Scan') {
       steps {
-        withCredentials([string(credentialsId: 'sonar-token', variable: 'SONAR_TOKEN')]) {
+        withCredentials([string(credentialsId: 'final', variable: 'SONAR_TOKEN')]) {
           withSonarQubeEnv('sonar') {
             sh '''
               set -euo pipefail

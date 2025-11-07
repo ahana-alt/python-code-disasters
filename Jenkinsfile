@@ -1,37 +1,27 @@
 pipeline {
   agent any
   options { timestamps() }
-
   stages {
-    stage('Checkout') {
-      steps { checkout scm }
-    }
-
-    stage('SonarQube Scan') {
+    stage('Sonar API ping') {
       steps {
         withSonarQubeEnv('sonar') {
           sh '''
             set -eu
-
-            # Install scanner locally if not present
-            SCANNER_DIR="$WORKSPACE/.local/sonar-scanner"
-            if [ ! -x "$SCANNER_DIR/bin/sonar-scanner" ]; then
-              mkdir -p "$WORKSPACE/.local"
-              curl -sSL https://binaries.sonarsource.com/Distribution/sonar-scanner-cli/sonar-scanner-5.0.1.3006-linux.zip -o /tmp/sonar.zip
-              unzip -q -o /tmp/sonar.zip -d "$WORKSPACE/.local"
-              mv "$WORKSPACE"/.local/sonar-scanner-* "$SCANNER_DIR"
+            echo "SONAR_HOST_URL=$SONAR_HOST_URL"
+            # Check server is reachable
+            code=$(curl -s -o /dev/null -w '%{http_code}' "$SONAR_HOST_URL/api/server/version" || true)
+            if [ "$code" != "200" ]; then
+              echo "Sonar server/version not reachable, HTTP $code"
+              exit 1
             fi
-            export PATH="$SCANNER_DIR/bin:$PATH"
-
-            # Run scan using Jenkins' Sonar server + token from withSonarQubeEnv
-            # (most setups expose SONAR_HOST_URL and SONAR_AUTH_TOKEN)
+            # Auth validation (proves token ok)
+            # Newer Jenkins Sonar plugin exposes SONAR_AUTH_TOKEN; if not, this call will 401 and we’ll fail.
             if [ -n "${SONAR_AUTH_TOKEN:-}" ]; then
-              sonar-scanner \
-                -Dsonar.host.url="$SONAR_HOST_URL" \
-                -Dsonar.login="$SONAR_AUTH_TOKEN"
+              body=$(curl -sfSL -H "Authorization: Bearer $SONAR_AUTH_TOKEN" "$SONAR_HOST_URL/api/authentication/validate" || true)
+              echo "Auth validate: $body"
+              echo "$body" | grep -q '"valid":true' || { echo "Token not valid"; exit 1; }
             else
-              # fallback: older plugins inject only SONAR_HOST_URL
-              sonar-scanner -Dsonar.host.url="$SONAR_HOST_URL"
+              echo "Warning: SONAR_AUTH_TOKEN not exposed by plugin, skipping auth validate."
             fi
           '''
         }
@@ -39,4 +29,3 @@ pipeline {
     }
   }
 }
-

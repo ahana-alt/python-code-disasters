@@ -1,6 +1,16 @@
 pipeline {
   agent any
-  options { timestamps() }
+  options {
+    timestamps()
+    ansiColor('xterm')
+    buildDiscarder(logRotator(numToKeepStr: '20'))
+  }
+
+  environment {
+    // local CLI install location (keeps agents clean)
+    SCANNER_URL = 'https://binaries.sonarsource.com/Distribution/sonar-scanner-cli/sonar-scanner-5.0.1.3006-linux.zip'
+    SCANNER_DIR = "${WORKSPACE}/.local/sonar-scanner"
+  }
 
   stages {
     stage('Checkout') {
@@ -9,30 +19,41 @@ pipeline {
 
     stage('SonarQube Scan') {
       steps {
-        withSonarQubeEnv('sonar') {   
+        // 1) ensure sonar-scanner is available (self-installed locally)
+        sh '''
+          set -eu
+          if [ ! -x "${SCANNER_DIR}/bin/sonar-scanner" ]; then
+            rm -rf "${WORKSPACE}/.local"
+            mkdir -p "${WORKSPACE}/.local"
+            curl -sSL "$SCANNER_URL" -o /tmp/sonar.zip
+            unzip -q /tmp/sonar.zip -d "${WORKSPACE}/.local"
+            mv "${WORKSPACE}/.local"/sonar-scanner-* "${SCANNER_DIR}"
+          fi
+        '''
+
+        // 2) run scanner using the Sonar server named "sonar" (configured in Jenkins)
+        withSonarQubeEnv('sonar') {
           sh '''
             set -eu
-            if ! command -v sonar-scanner >/dev/null 2>&1; then
-              curl -sLo /tmp/sonar.zip https://binaries.sonarsource.com/Distribution/sonar-scanner-cli/sonar-scanner-5.0.1.3006-linux.zip
-              rm -rf .local/sonar-scanner
-              mkdir -p .local
-              unzip -q /tmp/sonar.zip -d .local
-              mv .local/sonar-scanner-* .local/sonar-scanner
-              export PATH="$PWD/.local/sonar-scanner/bin:$PATH"
-            fi
+            export PATH="${SCANNER_DIR}/bin:$PATH"
+            # Uses the sonar-project.properties already in your repo:
+            #   sonar.projectKey=python-code-disasters
+            #   sonar.projectName=python-code-disasters
             sonar-scanner
           '''
         }
       }
     }
 
-    // Optional – only works instantly if you add a Sonar webhook to Jenkins
     stage('Quality Gate') {
       steps {
         script {
+          // This is instant if you add a Sonar webhook to Jenkins: http://<JENKINS-PUBLIC-IP>:8080/sonarqube-webhook/
           timeout(time: 3, unit: 'MINUTES') {
             def qg = waitForQualityGate()
-            if (qg.status != 'OK') error "Quality Gate failed: ${qg.status}"
+            if (qg.status != 'OK') {
+              error "Quality Gate failed: ${qg.status}"
+            }
           }
         }
       }

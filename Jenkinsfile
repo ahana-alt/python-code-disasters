@@ -110,7 +110,7 @@ gcloud dataproc jobs submit hadoop \
   -files "gs://${BUCKET}/jobs/mapper.py,gs://${BUCKET}/jobs/reducer.py" \
   -mapper "python3 mapper.py" \
   -reducer "python3 reducer.py" \
-  -input "gs://${BUCKET}/repo-input" \
+  -input "gs://${BUCKET}/repo-input/**/*.py" \
   -output "gs://${BUCKET}/${OUTDIR}"
 
 rm -rf artifacts && mkdir -p artifacts

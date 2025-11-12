@@ -8,10 +8,10 @@ pipeline {
     SONAR_HOST_URL = 'http://136.116.91.157:9000'
 
     // --- GCP / Dataproc job params ---
-    PROJECT_ID   = 'codeqa-ahana'
+    PROJECT_ID   = 'dp-codeqa'
     REGION       = 'us-central1'
     CLUSTER_NAME = 'ahana-dp'
-    BUCKET       = 'ahana-dp-bkt-1762552295'
+    BUCKET       = 'codeqa-results-bucket'
     HADOOP_VER   = '3.3.6'
   }
 

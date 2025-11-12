@@ -1,12 +1,20 @@
 #!/usr/bin/env python3
 import sys
-from collections import defaultdict
 
-counts = defaultdict(int)
+current_file = None
+count = 0
+
 for line in sys.stdin:
-    k, v = line.rstrip('\n').split('\t', 1)
-    counts[k] += int(v)
+    filename, val = line.strip().split('\t')
+    val = int(val)
+    
+    if filename == current_file:
+        count += val
+    else:
+        if current_file:
+            print(f'"{current_file}": {count}')
+        current_file = filename
+        count = val
 
-for k, v in counts.items():
-    print(f"{k}\t{v}")
-
+if current_file:
+    print(f'"{current_file}": {count}')

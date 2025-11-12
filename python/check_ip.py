@@ -1,6 +1,6 @@
 from multiprocessing import Process
 
-def split_list(alist, wanted_parts=1):
+def split_list(alist, wanted_parts=1)
     """Split a list into equal parts."""
     length = len(alist)
     return [

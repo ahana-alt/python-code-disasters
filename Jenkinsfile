@@ -20,6 +20,48 @@ pipeline {
       steps { checkout scm }
     }
 
+    stage('Python Syntax Check') {
+      steps {
+        sh '''#!/usr/bin/env bash
+set -euo pipefail
+echo "=========================================="
+echo "Checking Python syntax for all .py files"
+echo "=========================================="
+
+SYNTAX_ERROR=0
+
+# Find and check all Python files
+find . -name "*.py" \
+  -not -path "./.venv/*" \
+  -not -path "./venv/*" \
+  -not -path "./.git/*" \
+  -not -path "./.gcloud/*" | while read pyfile; do
+  
+  echo "Checking: $pyfile"
+  
+  if ! python3 -m py_compile "$pyfile" 2>&1; then
+    echo "❌ ERROR: Syntax error in $pyfile"
+    SYNTAX_ERROR=1
+  fi
+done
+
+# Check if any syntax errors were found
+if [ $SYNTAX_ERROR -eq 1 ]; then
+  echo ""
+  echo "=========================================="
+  echo "❌ BUILD FAILED: Python syntax errors found"
+  echo "=========================================="
+  exit 1
+fi
+
+echo ""
+echo "=========================================="
+echo "✅ All Python files have valid syntax"
+echo "=========================================="
+'''
+      }
+    }
+
     stage('SonarQube Scan') {
       steps {
         withCredentials([string(credentialsId: 'final', variable: 'SONAR_TOKEN')]) {
@@ -45,7 +87,9 @@ sonar-scanner \
           script {
             def qg = waitForQualityGate()
             echo "Quality Gate status: ${qg.status}"
-            if (qg.status != 'OK') { error "Quality Gate failed: ${qg.status}" }
+            if (qg.status != 'OK') { 
+              error "Quality Gate failed: ${qg.status}" 
+            }
           }
         }
       }
@@ -130,8 +174,11 @@ test -s artifacts/linecounts_head.txt
   }
 
   post {
-    failure { echo 'Pipeline failed. Check the stage logs above (Sonar, Auth, or Dataproc).' }
-    success { echo 'Pipeline finished successfully' }
+    failure { 
+      echo 'Pipeline failed. Check the stage logs above (Syntax Check, Sonar, Auth, or Dataproc).' 
+    }
+    success { 
+      echo 'Pipeline finished successfully' 
+    }
   }
 }
-
